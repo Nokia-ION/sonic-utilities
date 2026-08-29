@@ -2,6 +2,7 @@ import click
 
 import json
 import ipaddress
+import re
 import subprocess
 
 import utilities_common.cli as clicommon
@@ -16,6 +17,13 @@ SYSLOG_TABLE_CDB = "SYSLOG_SERVER"
 SYSLOG_SOURCE = "source"
 SYSLOG_PORT = "port"
 SYSLOG_VRF = "vrf"
+SYSLOG_PROTOCOL = "protocol"
+SYSLOG_TRANSPORT_SECURITY = "transport_security"
+SYSLOG_TLS_PROFILE_ID = "tls_profile_id"
+
+SYSLOG_DEFAULT_TLS_PORT = 6514
+TLS_PROFILE_ID_RE = re.compile(r'^[A-Za-z0-9._-]+$')
+DEFAULT_PROFILE = "gnxi"
 
 VRF_TABLE_CDB = "VRF"
 MGMT_VRF_TABLE_CDB = "MGMT_VRF_CONFIG"
@@ -89,6 +97,32 @@ def get_param(ctx, name):
 def get_param_hint(ctx, name):
     """ Get click parameter description """
     return get_param(ctx, name).get_error_hint(ctx)
+
+
+def tls_profile_id_validator(ctx, param, value):
+    """Validate tls_profile_id syntax. Cert files may appear later via Certz."""
+    if value is None:
+        return None
+    if value in ('.', '..', DEFAULT_PROFILE) or not TLS_PROFILE_ID_RE.match(value):
+        raise click.UsageError(
+            "Invalid value for {}: {} is not a valid syslog TLS profile id".format(
+                param.get_error_hint(ctx), value), ctx
+        )
+    return value
+
+
+def tls_server_options_validator(ctx, protocol, tls_profile_id):
+    """tls_profile_id is required for protocol tls and forbidden otherwise."""
+    is_tls = protocol == 'tls'
+    if is_tls and not tls_profile_id:
+        raise click.UsageError(
+            "{} is required when --protocol tls".format(
+                get_param_hint(ctx, "tls_profile_id")), ctx
+        )
+    if tls_profile_id and not is_tls:
+        raise click.UsageError(
+            "--protocol tls is required when --tls-profile-id is set", ctx
+        )
 
 #
 # Syslog DB interface -------------------------------------------------------------------------------------------------
@@ -388,12 +422,29 @@ def syslog():
     "-r", "--vrf",
     help="Configures syslog VRF device"
 )
+@click.option(
+    "--protocol",
+    type=click.Choice(["udp", "tcp", "tls"], case_sensitive=False),
+    help="Transport protocol. tls implies TCP plus rsyslog ossl."
+)
+@click.option(
+    "--tls-profile-id",
+    callback=tls_profile_id_validator,
+    help="gNSI Certz SSL profile id (host PEMs under /etc/sonic/ssl-certs/<id>/; not gnxi)"
+)
 @clicommon.pass_db
-def add(db, server_ip_address, source, port, vrf):
+def add(db, server_ip_address, source, port, vrf, protocol, tls_profile_id):
     """ Add object to SYSLOG_SERVER table """
     ctx = click.get_current_context()
 
     server_validator(ctx, db.cfgdb, server_ip_address, False)
+
+    if protocol:
+        protocol = protocol.lower()
+    tls_server_options_validator(ctx, protocol, tls_profile_id)
+
+    if protocol == 'tls' and port is None:
+        port = SYSLOG_DEFAULT_TLS_PORT
 
     table = str(SYSLOG_TABLE_CDB)
     key = str(server_ip_address)
@@ -403,10 +454,15 @@ def add(db, server_ip_address, source, port, vrf):
         source_validator(ctx, server_ip_address, source)
         data[SYSLOG_SOURCE] = source
     if port is not None:
-        data[SYSLOG_PORT] = port
+        data[SYSLOG_PORT] = str(port)
     if vrf is not None:
         vrf_validator(ctx, db.cfgdb, vrf)
         data[SYSLOG_VRF] = vrf
+    if protocol is not None:
+        data[SYSLOG_PROTOCOL] = protocol
+    if protocol == 'tls':
+        data[SYSLOG_TRANSPORT_SECURITY] = "true"
+        data[SYSLOG_TLS_PROFILE_ID] = tls_profile_id
 
     source_to_vrf_validator(ctx, source, vrf)
 
@@ -414,12 +470,16 @@ def add(db, server_ip_address, source, port, vrf):
         add_entry(db.cfgdb, table, key, data)
         clicommon.run_command(['systemctl', 'reset-failed', 'rsyslog-config', 'rsyslog'], display_cmd=True)
         clicommon.run_command(['systemctl', 'restart', 'rsyslog-config'], display_cmd=True)
-        log.log_notice("Added remote syslog logging: server={},source={},port={},vrf={}".format(
-            server_ip_address,
-            data.get(SYSLOG_SOURCE, "N/A"),
-            data.get(SYSLOG_PORT, "N/A"),
-            data.get(SYSLOG_VRF, "N/A")
-        ))
+        log.log_notice(
+            "Added remote syslog logging: server={},source={},port={},vrf={},protocol={},tls_profile_id={}".format(
+                server_ip_address,
+                data.get(SYSLOG_SOURCE, "N/A"),
+                data.get(SYSLOG_PORT, "N/A"),
+                data.get(SYSLOG_VRF, "N/A"),
+                data.get(SYSLOG_PROTOCOL, "N/A"),
+                data.get(SYSLOG_TLS_PROFILE_ID, "N/A"),
+            )
+        )
     except Exception as e:
         log.log_error("Failed to add remote syslog logging: {}".format(str(e)))
         ctx.fail(str(e))
