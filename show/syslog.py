@@ -15,6 +15,8 @@ SYSLOG_TABLE = "SYSLOG_SERVER"
 SYSLOG_SOURCE = "source"
 SYSLOG_PORT = "port"
 SYSLOG_VRF = "vrf"
+SYSLOG_PROTOCOL = "protocol"
+SYSLOG_TLS_PROFILE_ID = "tls_profile_id"
 
 #
 # Syslog helpers ------------------------------------------------------------------------------------------------------
@@ -45,6 +47,8 @@ def syslog(db, ctx):
         "SOURCE IP",
         "PORT",
         "VRF",
+        "PROTOCOL",
+        "TLS PROFILE ID",
     ]
     body = []
 
@@ -55,6 +59,8 @@ def syslog(db, ctx):
             entry.get(SYSLOG_SOURCE, "N/A"),
             entry.get(SYSLOG_PORT, "N/A"),
             entry.get(SYSLOG_VRF, "N/A"),
+            entry.get(SYSLOG_PROTOCOL, "udp"),
+            entry.get(SYSLOG_TLS_PROFILE_ID, "N/A"),
         ]
         body.append(row)
 

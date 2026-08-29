@@ -229,6 +229,87 @@ class TestSyslog:
         assert ERROR_PATTERN_NONEXISTENT_VRF in result.output
         assert result.exit_code == ERROR2
 
+    ########## CONFIG SYSLOG TLS ##########
+
+    @mock.patch("utilities_common.cli.run_command", mock.MagicMock(return_value=None))
+    def test_config_syslog_tls(self):
+        db = Db()
+        runner = CliRunner()
+
+        result = runner.invoke(
+            config.config.commands["syslog"].commands["add"],
+            ["10.0.0.5", "--protocol", "tls", "--tls-profile-id", "siem-east"],
+            obj=db
+        )
+        assert result.exit_code == SUCCESS, result.output
+
+        server = db.cfgdb.get_entry(config_syslog.SYSLOG_TABLE_CDB, "10.0.0.5")
+        assert server[config_syslog.SYSLOG_PROTOCOL] == "tls"
+        assert server[config_syslog.SYSLOG_TRANSPORT_SECURITY] == "true"
+        assert server[config_syslog.SYSLOG_TLS_PROFILE_ID] == "siem-east"
+        assert server[config_syslog.SYSLOG_PORT] == str(config_syslog.SYSLOG_DEFAULT_TLS_PORT)
+
+    @mock.patch("utilities_common.cli.run_command", mock.MagicMock(return_value=None))
+    def test_config_syslog_tls_custom_port(self):
+        db = Db()
+        runner = CliRunner()
+
+        result = runner.invoke(
+            config.config.commands["syslog"].commands["add"],
+            ["10.0.0.5", "--protocol", "tls", "--tls-profile-id", "siem-west", "-p", "200"],
+            obj=db
+        )
+        assert result.exit_code == SUCCESS, result.output
+        server = db.cfgdb.get_entry(config_syslog.SYSLOG_TABLE_CDB, "10.0.0.5")
+        assert server[config_syslog.SYSLOG_PORT] == "200"
+        assert server[config_syslog.SYSLOG_TLS_PROFILE_ID] == "siem-west"
+
+    def test_config_syslog_tls_requires_profile(self):
+        db = Db()
+        runner = CliRunner()
+
+        result = runner.invoke(
+            config.config.commands["syslog"].commands["add"],
+            ["10.0.0.5", "--protocol", "tls"], obj=db
+        )
+        assert result.exit_code == ERROR2
+        assert "tls-profile-id" in result.output.lower()
+
+    def test_config_syslog_profile_requires_tls(self):
+        db = Db()
+        runner = CliRunner()
+
+        result = runner.invoke(
+            config.config.commands["syslog"].commands["add"],
+            ["10.0.0.5", "--tls-profile-id", "siem-east"], obj=db
+        )
+        assert result.exit_code == ERROR2
+        assert "--protocol tls is required" in result.output
+
+    def test_config_syslog_tls_rejects_gnxi(self):
+        db = Db()
+        runner = CliRunner()
+
+        result = runner.invoke(
+            config.config.commands["syslog"].commands["add"],
+            ["10.0.0.5", "--protocol", "tls", "--tls-profile-id", "gnxi"],
+            obj=db
+        )
+        assert result.exit_code == ERROR2
+        assert "not a valid syslog TLS profile id" in result.output
+
+    def test_config_syslog_tls_rejects_bad_profile_id(self):
+        db = Db()
+        runner = CliRunner()
+
+        result = runner.invoke(
+            config.config.commands["syslog"].commands["add"],
+            ["10.0.0.5", "--protocol", "tls", "--tls-profile-id", "bad/id"],
+            obj=db
+        )
+        assert result.exit_code == ERROR2
+        assert "not a valid syslog TLS profile id" in result.output
+
     @pytest.mark.parametrize("test_data", [{'interval':1, 'burst':100, 'expected_interval': '1', 'expected_burst': '100'},
                                            {'interval':0, 'burst':100, 'expected_interval': '0', 'expected_burst': '0'},
                                            {'interval':1, 'burst':0, 'expected_interval': '0', 'expected_burst': '0'}])
