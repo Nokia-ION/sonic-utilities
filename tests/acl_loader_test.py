@@ -10,6 +10,11 @@ sys.path.insert(0, modules_path)
 
 from acl_loader import *
 from acl_loader.main import *
+import openconfig_acl
+
+def openconfig_acl_supports_set_tc():
+    actions_config = openconfig_acl.yc_config_openconfig_acl__acl_acl_sets_acl_set_acl_entries_acl_entry_actions_config
+    return 'set_tc' in actions_config._pyangbind_elements
 
 class TestAclLoader(object):
     @pytest.fixture(scope="class")
@@ -55,6 +60,97 @@ class TestAclLoader(object):
         # switch capability taken from mock_tables/state_db.json ACL_STAGE_CAPABILITY_TABLE table
         assert acl_loader.validate_actions("DATAACL", forward_packet_action)
         assert not acl_loader.validate_actions("DATAACL", drop_packet_action)
+
+    def test_validate_set_tc_action(self, acl_loader):
+        if acl_loader.per_npu_statedb:
+            statedb = list(acl_loader.per_npu_statedb.values())[0]
+        else:
+            statedb = acl_loader.statedb
+
+        capability_key = "ACL_STAGE_CAPABILITY_TABLE|INGRESS"
+        original_capability = statedb.get_all("STATE_DB", capability_key)
+        action_list = original_capability.get("action_list", "PACKET_ACTION")
+        if "SET_TC" not in action_list.split(","):
+            action_list = "{},SET_TC".format(action_list)
+
+        try:
+            statedb.set("STATE_DB", capability_key, "action_list", action_list)
+
+            forward_with_set_tc = {
+                "PACKET_ACTION": "FORWARD",
+                "SET_TC": "5"
+            }
+            assert acl_loader.validate_actions("DATAACL", forward_with_set_tc)
+
+            set_tc_only = {
+                "SET_TC": "3"
+            }
+            assert acl_loader.validate_actions("DATAACL", set_tc_only)
+
+            unsupported_set_tc = {
+                "SET_TC": "3"
+            }
+            statedb.set("STATE_DB", capability_key, "action_list", "PACKET_ACTION")
+            assert not acl_loader.validate_actions("DATAACL", unsupported_set_tc)
+        finally:
+            for key, value in original_capability.items():
+                statedb.set("STATE_DB", capability_key, key, value)
+
+    def test_show_rule_set_tc_action(self, acl_loader, capsys):
+        acl_loader.rules_db_info = {
+            ("MY_L3", "RULE1"): {
+                "PRIORITY": "100",
+                "PACKET_ACTION": "FORWARD",
+                "SET_TC": "5",
+                "SRC_IP": "1.1.1.1/32"
+            }
+        }
+        acl_loader.acl_rule_status = {}
+
+        acl_loader.show_rule("MY_L3", "RULE1")
+        captured = capsys.readouterr().out
+
+        assert "FORWARD, SET_TC: 5" in captured
+        assert "SRC_IP: 1.1.1.1/32" in captured
+
+    def test_load_set_tc_from_json(self, acl_loader):
+        if not openconfig_acl_supports_set_tc():
+            pytest.skip("openconfig_acl does not support set-tc; rebuild sonic-config-engine")
+
+        if acl_loader.per_npu_statedb:
+            statedb = list(acl_loader.per_npu_statedb.values())[0]
+        else:
+            statedb = acl_loader.statedb
+
+        capability_key = "ACL_STAGE_CAPABILITY_TABLE|INGRESS"
+        original_capability = statedb.get_all("STATE_DB", capability_key)
+        action_list = original_capability.get("action_list", "PACKET_ACTION")
+        if "SET_TC" not in action_list.split(","):
+            action_list = "{},SET_TC".format(action_list)
+
+        try:
+            statedb.set("STATE_DB", capability_key, "action_list", action_list)
+            acl_loader.rules_info = {}
+            acl_loader.load_rules_from_file(os.path.join(test_path, 'acl_input/acl_set_tc.json'))
+            assert acl_loader.rules_info[("DATAACL", "RULE_10")] == {
+                "VLAN_ID": 369,
+                "ETHER_TYPE": 2048,
+                "IP_PROTOCOL": 6,
+                "IP_TYPE": "IP",
+                "SRC_IP": "20.0.0.2/32",
+                "DST_IP": "30.0.0.3/32",
+                "PACKET_ACTION": "FORWARD",
+                "SET_TC": "5",
+                "PRIORITY": "9990"
+            }
+        finally:
+            for key, value in original_capability.items():
+                statedb.set("STATE_DB", capability_key, key, value)
+
+    def test_load_invalid_set_tc_from_json(self, acl_loader):
+        acl_loader.rules_info = {}
+        with pytest.raises(AclLoaderException):
+            acl_loader.load_rules_from_file(os.path.join(test_path, 'acl_input/illegal_set_tc.json'))
 
     def test_load_rules_when_capability_table_is_empty(self, acl_loader):
         """
@@ -103,17 +199,17 @@ class TestAclLoader(object):
         }
 
     def test_vlan_id_lower_bound(self, acl_loader):
-        with pytest.raises(ValueError):
+        with pytest.raises(AclLoaderException):
             acl_loader.rules_info = {}
             acl_loader.load_rules_from_file(os.path.join(test_path, 'acl_input/illegal_vlan_0.json'))
 
     def test_vlan_id_upper_bound(self, acl_loader):
-        with pytest.raises(ValueError):
+        with pytest.raises(AclLoaderException):
             acl_loader.rules_info = {}
             acl_loader.load_rules_from_file(os.path.join(test_path, 'acl_input/illegal_vlan_9000.json'))
 
     def test_vlan_id_not_a_number(self, acl_loader):
-        with pytest.raises(ValueError):
+        with pytest.raises(AclLoaderException):
             acl_loader.rules_info = {}
             acl_loader.load_rules_from_file(os.path.join(test_path, 'acl_input/illegal_vlan_nan.json'))
 
@@ -280,32 +376,32 @@ class TestAclLoader(object):
         assert ('DATAACL_4', 'DEFAULT_RULE') not in acl_loader.rules_info
 
     def test_icmp_type_lower_bound(self, acl_loader):
-        with pytest.raises(ValueError):
+        with pytest.raises(AclLoaderException):
             acl_loader.rules_info = {}
             acl_loader.load_rules_from_file(os.path.join(test_path, 'acl_input/illegal_icmp_type_neg_1.json'))
 
     def test_icmp_type_upper_bound(self, acl_loader):
-        with pytest.raises(ValueError):
+        with pytest.raises(AclLoaderException):
             acl_loader.rules_info = {}
             acl_loader.load_rules_from_file(os.path.join(test_path, 'acl_input/illegal_icmp_type_300.json'))
 
     def test_icmp_type_not_a_number(self, acl_loader):
-        with pytest.raises(ValueError):
+        with pytest.raises(AclLoaderException):
             acl_loader.rules_info = {}
             acl_loader.load_rules_from_file(os.path.join(test_path, 'acl_input/illegal_icmp_type_nan.json'))
 
     def test_icmp_code_lower_bound(self, acl_loader):
-        with pytest.raises(ValueError):
+        with pytest.raises(AclLoaderException):
             acl_loader.rules_info = {}
             acl_loader.load_rules_from_file(os.path.join(test_path, 'acl_input/illegal_icmp_code_neg_1.json'))
 
     def test_icmp_code_upper_bound(self, acl_loader):
-        with pytest.raises(ValueError):
+        with pytest.raises(AclLoaderException):
             acl_loader.rules_info = {}
             acl_loader.load_rules_from_file(os.path.join(test_path, 'acl_input/illegal_icmp_code_300.json'))
 
     def test_icmp_code_not_a_number(self, acl_loader):
-        with pytest.raises(ValueError):
+        with pytest.raises(AclLoaderException):
             acl_loader.rules_info = {}
             acl_loader.load_rules_from_file(os.path.join(test_path, 'acl_input/illegal_icmp_code_nan.json'))
 
