@@ -47,6 +47,7 @@ class AclAction:
     MIRROR         = "MIRROR_ACTION"
     MIRROR_INGRESS = "MIRROR_INGRESS_ACTION"
     MIRROR_EGRESS  = "MIRROR_EGRESS_ACTION"
+    SET_TC         = "SET_TC"
 
 
 class PacketAction:
@@ -489,7 +490,10 @@ class AclLoader(object):
 
     @staticmethod
     def parse_acl_json(filename):
-        yang_acl = pybindJSON.load(filename, openconfig_acl, "openconfig_acl")
+        try:
+            yang_acl = pybindJSON.load(filename, openconfig_acl, "openconfig_acl")
+        except (ValueError, AttributeError) as ex:
+            raise AclLoaderException("Invalid input file %s: %s" % (filename, ex))
         # Check pybindJSON parsing
         # pybindJSON.load will silently return an empty json object if input invalid
         with open(filename, 'r') as f:
@@ -507,6 +511,32 @@ class AclLoader(object):
         """
         self.yang_acl = AclLoader.parse_acl_json(filename)
         self.convert_rules(skip_action_validation)
+
+    def convert_set_tc_action(self, table_name, rule_idx, rule, rule_props, skip_validation=False):
+        if not hasattr(rule.actions.config, 'set_tc'):
+            return
+
+        if not rule.actions.config.set_tc._changed():
+            return
+
+        try:
+            tc = int(rule.actions.config.set_tc)
+        except (TypeError, ValueError):
+            raise AclLoaderException(
+                "Invalid set-tc value {} in table {}, rule {}".format(
+                    rule.actions.config.set_tc, table_name, rule_idx))
+
+        if tc < 0 or tc > 7:
+            raise AclLoaderException(
+                "set-tc value {} is out of range 0-7 in table {}, rule {}".format(
+                    tc, table_name, rule_idx))
+
+        set_tc_props = {AclAction.SET_TC: str(tc)}
+        if not self.validate_actions(table_name, set_tc_props, skip_validation):
+            raise AclLoaderException(
+                "SET_TC action is not supported in table {}, rule {}".format(table_name, rule_idx))
+
+        rule_props[AclAction.SET_TC] = str(tc)
 
     def convert_action(self, table_name, rule_idx, rule, skip_validation=False):
         rule_props = {}
@@ -540,6 +570,8 @@ class AclLoader(object):
         if not self.validate_actions(table_name, rule_props, skip_validation):
             raise AclLoaderException("Rule action {} is not supported in table {}, rule {}".format(
                 rule.actions.config.forwarding_action, table_name, rule_idx))
+
+        self.convert_set_tc_action(table_name, rule_idx, rule, rule_props, skip_validation)
 
         return rule_props
 
@@ -1109,22 +1141,22 @@ class AclLoader(object):
             return priority
 
         def pop_action(val):
-            action = ""
+            actions = []
 
-            for key in dict(val):
-                key = key.upper()
-                if key == AclAction.PACKET:
-                    action = val.pop(key)
-                elif key == AclAction.REDIRECT:
-                    action = "REDIRECT: {}".format(val.pop(key))
-                elif key in (AclAction.MIRROR, AclAction.MIRROR_INGRESS):
-                    action = "MIRROR INGRESS: {}".format(val.pop(key))
-                elif key == AclAction.MIRROR_EGRESS:
-                    action = "MIRROR EGRESS: {}".format(val.pop(key))
-                else:
-                    continue
+            for key in list(val.keys()):
+                key_upper = key.upper()
+                if key_upper == AclAction.PACKET:
+                    actions.append(str(val.pop(key)))
+                elif key_upper == AclAction.REDIRECT:
+                    actions.append("REDIRECT: {}".format(val.pop(key)))
+                elif key_upper in (AclAction.MIRROR, AclAction.MIRROR_INGRESS):
+                    actions.append("MIRROR INGRESS: {}".format(val.pop(key)))
+                elif key_upper == AclAction.MIRROR_EGRESS:
+                    actions.append("MIRROR EGRESS: {}".format(val.pop(key)))
+                elif key_upper == AclAction.SET_TC:
+                    actions.append("SET_TC: {}".format(val.pop(key)))
 
-            return action
+            return ", ".join(actions)
 
         def pop_matches(val):
             matches = list(sorted(["%s: %s" % (k, val[k]) for k in val]))
