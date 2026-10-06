@@ -20,9 +20,15 @@ SYSLOG_VRF = "vrf"
 SYSLOG_PROTOCOL = "protocol"
 SYSLOG_TRANSPORT_SECURITY = "transport_security"
 SYSLOG_TLS_PROFILE_ID = "tls_profile_id"
+SYSLOG_TLS_PERMITTED_PEERS = "tls_permitted_peers"
 
 SYSLOG_DEFAULT_TLS_PORT = 6514
 TLS_PROFILE_ID_RE = re.compile(r'^[A-Za-z0-9._-]+$')
+# One permitted peer: a DNS name with an optional leading wildcard label
+# (*.example.com). A bare "*" is rejected. Must match sonic-syslog.yang.
+# Note: rsyslog 8.2504 and earlier match wildcard entries only against the
+# certificate subject CN (not SAN names), one DNS label per "*".
+TLS_PEER_RE = re.compile(r'^(\*\.)?[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$')
 DEFAULT_PROFILE = "gnxi"
 
 VRF_TABLE_CDB = "VRF"
@@ -111,17 +117,46 @@ def tls_profile_id_validator(ctx, param, value):
     return value
 
 
-def tls_server_options_validator(ctx, protocol, tls_profile_id):
-    """tls_profile_id is required for protocol tls and forbidden otherwise."""
+def tls_permitted_peers_validator(ctx, param, value):
+    """Validate and normalize tls_permitted_peers (comma-separated names).
+
+    Whitespace around entries is dropped. Returns the canonical comma-joined
+    string stored in CONFIG_DB, which rsyslog uses as StreamDriverPermittedPeers.
+    """
+    if value is None:
+        return None
+    peers = [peer.strip() for peer in value.split(',')]
+    for peer in peers:
+        if not TLS_PEER_RE.match(peer):
+            raise click.UsageError(
+                "Invalid value for {}: {} is not a valid permitted peer name "
+                "(use the exact DNS name from the server certificate, optionally with a "
+                "leading wildcard such as *.example.com)".format(
+                    param.get_error_hint(ctx), repr(peer)), ctx
+            )
+    return ",".join(peers)
+
+
+def tls_server_options_validator(ctx, protocol, tls_profile_id, tls_permitted_peers):
+    """tls_profile_id and tls_permitted_peers are required for protocol tls and forbidden otherwise."""
     is_tls = protocol == 'tls'
     if is_tls and not tls_profile_id:
         raise click.UsageError(
             "{} is required when --protocol tls".format(
                 get_param_hint(ctx, "tls_profile_id")), ctx
         )
+    if is_tls and not tls_permitted_peers:
+        raise click.UsageError(
+            "{} is required when --protocol tls".format(
+                get_param_hint(ctx, "tls_permitted_peers")), ctx
+        )
     if tls_profile_id and not is_tls:
         raise click.UsageError(
             "--protocol tls is required when --tls-profile-id is set", ctx
+        )
+    if tls_permitted_peers and not is_tls:
+        raise click.UsageError(
+            "--protocol tls is required when --tls-permitted-peers is set", ctx
         )
 
 #
@@ -432,8 +467,16 @@ def syslog():
     callback=tls_profile_id_validator,
     help="gNSI Certz SSL profile id (host PEMs under /etc/sonic/ssl-certs/<id>/; not gnxi)"
 )
+@click.option(
+    "--tls-permitted-peers",
+    callback=tls_permitted_peers_validator,
+    help="Comma-separated server certificate names the syslog server must present "
+         "(exact DNS names; a leading wildcard such as *.example.com is accepted but "
+         "only matches the certificate CN, not SAN names, on rsyslog 8.2504). "
+         "Required with --protocol tls"
+)
 @clicommon.pass_db
-def add(db, server_ip_address, source, port, vrf, protocol, tls_profile_id):
+def add(db, server_ip_address, source, port, vrf, protocol, tls_profile_id, tls_permitted_peers):
     """ Add object to SYSLOG_SERVER table """
     ctx = click.get_current_context()
 
@@ -441,7 +484,7 @@ def add(db, server_ip_address, source, port, vrf, protocol, tls_profile_id):
 
     if protocol:
         protocol = protocol.lower()
-    tls_server_options_validator(ctx, protocol, tls_profile_id)
+    tls_server_options_validator(ctx, protocol, tls_profile_id, tls_permitted_peers)
 
     if protocol == 'tls' and port is None:
         port = SYSLOG_DEFAULT_TLS_PORT
@@ -463,6 +506,7 @@ def add(db, server_ip_address, source, port, vrf, protocol, tls_profile_id):
     if protocol == 'tls':
         data[SYSLOG_TRANSPORT_SECURITY] = "true"
         data[SYSLOG_TLS_PROFILE_ID] = tls_profile_id
+        data[SYSLOG_TLS_PERMITTED_PEERS] = tls_permitted_peers
 
     source_to_vrf_validator(ctx, source, vrf)
 
@@ -471,13 +515,14 @@ def add(db, server_ip_address, source, port, vrf, protocol, tls_profile_id):
         clicommon.run_command(['systemctl', 'reset-failed', 'rsyslog-config', 'rsyslog'], display_cmd=True)
         clicommon.run_command(['systemctl', 'restart', 'rsyslog-config'], display_cmd=True)
         log.log_notice(
-            "Added remote syslog logging: server={},source={},port={},vrf={},protocol={},tls_profile_id={}".format(
+            "Added remote syslog logging: server={},source={},port={},vrf={},protocol={},tls_profile_id={},tls_permitted_peers={}".format(
                 server_ip_address,
                 data.get(SYSLOG_SOURCE, "N/A"),
                 data.get(SYSLOG_PORT, "N/A"),
                 data.get(SYSLOG_VRF, "N/A"),
                 data.get(SYSLOG_PROTOCOL, "N/A"),
                 data.get(SYSLOG_TLS_PROFILE_ID, "N/A"),
+                data.get(SYSLOG_TLS_PERMITTED_PEERS, "N/A"),
             )
         )
     except Exception as e:

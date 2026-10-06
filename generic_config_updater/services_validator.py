@@ -106,6 +106,16 @@ def rsyslog_validator(old_config, upd_config, keys):
                        f"SYSLOG_SERVER|{server} TLS requires tls_profile_id",
                        print_to_console)
             return False
+        if is_tls and not row.get("tls_permitted_peers"):
+            logger.log(logger.LOG_PRIORITY_ERROR,
+                       f"SYSLOG_SERVER|{server} TLS requires tls_permitted_peers",
+                       print_to_console)
+            return False
+        if row.get("tls_permitted_peers") and not is_tls:
+            logger.log(logger.LOG_PRIORITY_ERROR,
+                       f"SYSLOG_SERVER|{server} tls_permitted_peers requires protocol tls",
+                       print_to_console)
+            return False
         if row.get("tls_profile_id") and not is_tls:
             logger.log(logger.LOG_PRIORITY_ERROR,
                        f"SYSLOG_SERVER|{server} tls_profile_id requires protocol tls",
