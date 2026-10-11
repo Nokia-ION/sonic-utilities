@@ -6753,6 +6753,12 @@ def remove(ctx, interface_name, ip_addr):
         if interface_name is None:
             ctx.fail("'interface_name' is None!")
 
+    if "/" not in ip_addr:
+        ctx.fail(
+            "IP address must include prefix length "
+            "(e.g. 10.0.0.1/24 or 2001:db8::1/64)"
+        )
+
     try:
         ip_address = ipaddress.ip_interface(ip_addr)
     except ValueError as err:
