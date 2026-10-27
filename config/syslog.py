@@ -21,6 +21,8 @@ SYSLOG_PROTOCOL = "protocol"
 SYSLOG_TRANSPORT_SECURITY = "transport_security"
 SYSLOG_TLS_PROFILE_ID = "tls_profile_id"
 SYSLOG_TLS_PERMITTED_PEERS = "tls_permitted_peers"
+SYSLOG_SEVERITY = syslog_common.SYSLOG_FIELD_SEVERITY
+SYSLOG_FACILITY = syslog_common.SYSLOG_FIELD_FACILITY
 
 SYSLOG_DEFAULT_TLS_PORT = 6514
 TLS_PROFILE_ID_RE = re.compile(r'^[A-Za-z0-9._-]+$')
@@ -158,6 +160,19 @@ def tls_server_options_validator(ctx, protocol, tls_profile_id, tls_permitted_pe
         raise click.UsageError(
             "--protocol tls is required when --tls-permitted-peers is set", ctx
         )
+
+
+def selector_fields_validator(ctx, facility, severity):
+    if facility is None and severity is None:
+        raise click.UsageError(
+            "At least one of --facility or --severity is required", ctx
+        )
+
+
+def restart_rsyslog_config():
+    clicommon.run_command(
+        ['systemctl', 'reset-failed', 'rsyslog-config', 'rsyslog'], display_cmd=True)
+    clicommon.run_command(['systemctl', 'restart', 'rsyslog-config'], display_cmd=True)
 
 #
 # Syslog DB interface -------------------------------------------------------------------------------------------------
@@ -475,8 +490,18 @@ def syslog():
          "only matches the certificate CN, not SAN names, on rsyslog 8.2504). "
          "Required with --protocol tls"
 )
+@click.option(
+    "--severity",
+    type=click.Choice(syslog_common.SYSLOG_SEVERITY_CHOICES, case_sensitive=False),
+    help="Minimum syslog severity forwarded to this server"
+)
+@click.option(
+    "--facility",
+    help="Syslog facility filter for this server (e.g. local4, daemon, all)"
+)
 @clicommon.pass_db
-def add(db, server_ip_address, source, port, vrf, protocol, tls_profile_id, tls_permitted_peers):
+def add(db, server_ip_address, source, port, vrf, protocol, tls_profile_id, tls_permitted_peers,
+        severity, facility):
     """ Add object to SYSLOG_SERVER table """
     ctx = click.get_current_context()
 
@@ -507,15 +532,19 @@ def add(db, server_ip_address, source, port, vrf, protocol, tls_profile_id, tls_
         data[SYSLOG_TRANSPORT_SECURITY] = "true"
         data[SYSLOG_TLS_PROFILE_ID] = tls_profile_id
         data[SYSLOG_TLS_PERMITTED_PEERS] = tls_permitted_peers
+    if severity is not None:
+        data[SYSLOG_SEVERITY] = syslog_common.normalize_syslog_severity(severity)
+    if facility is not None:
+        data[SYSLOG_FACILITY] = syslog_common.normalize_syslog_facility(facility)
 
     source_to_vrf_validator(ctx, source, vrf)
 
     try:
         add_entry(db.cfgdb, table, key, data)
-        clicommon.run_command(['systemctl', 'reset-failed', 'rsyslog-config', 'rsyslog'], display_cmd=True)
-        clicommon.run_command(['systemctl', 'restart', 'rsyslog-config'], display_cmd=True)
+        restart_rsyslog_config()
         log.log_notice(
-            "Added remote syslog logging: server={},source={},port={},vrf={},protocol={},tls_profile_id={},tls_permitted_peers={}".format(
+            "Added remote syslog logging: server={},source={},port={},vrf={},protocol={},"
+            "tls_profile_id={},tls_permitted_peers={},facility={},severity={}".format(
                 server_ip_address,
                 data.get(SYSLOG_SOURCE, "N/A"),
                 data.get(SYSLOG_PORT, "N/A"),
@@ -523,6 +552,8 @@ def add(db, server_ip_address, source, port, vrf, protocol, tls_profile_id, tls_
                 data.get(SYSLOG_PROTOCOL, "N/A"),
                 data.get(SYSLOG_TLS_PROFILE_ID, "N/A"),
                 data.get(SYSLOG_TLS_PERMITTED_PEERS, "N/A"),
+                data.get(SYSLOG_FACILITY, "N/A"),
+                data.get(SYSLOG_SEVERITY, "N/A"),
             )
         )
     except Exception as e:
@@ -549,11 +580,89 @@ def delete(db, server_ip_address):
 
     try:
         del_entry(db.cfgdb, table, key)
-        clicommon.run_command(['systemctl', 'reset-failed', 'rsyslog-config', 'rsyslog'], display_cmd=True)
-        clicommon.run_command(['systemctl', 'restart', 'rsyslog-config'], display_cmd=True)
+        restart_rsyslog_config()
         log.log_notice("Removed remote syslog logging: server={}".format(server_ip_address))
     except Exception as e:
         log.log_error("Failed to remove remote syslog logging: {}".format(str(e)))
+        ctx.fail(str(e))
+
+
+@syslog.group("selector", cls=clicommon.AliasedGroup)
+def selector():
+    """ Configure per-server syslog facility/severity selector """
+    pass
+
+
+@selector.command("set")
+@click.argument(
+    "server_ip_address",
+    nargs=1,
+    required=True,
+    callback=ip_addr_validator
+)
+@click.option(
+    "--severity",
+    type=click.Choice(syslog_common.SYSLOG_SEVERITY_CHOICES, case_sensitive=False),
+    help="Minimum severity forwarded to this server"
+)
+@click.option("--facility", help="Facility filter (e.g. local4, all)")
+@clicommon.pass_db
+def selector_set(db, server_ip_address, severity, facility):
+    """ Set or update facility/severity on an existing syslog server """
+    ctx = click.get_current_context()
+    server_validator(ctx, db.cfgdb, server_ip_address)
+    selector_fields_validator(ctx, facility, severity)
+
+    data = {}
+    if severity is not None:
+        data[SYSLOG_SEVERITY] = syslog_common.normalize_syslog_severity(severity)
+    if facility is not None:
+        data[SYSLOG_FACILITY] = syslog_common.normalize_syslog_facility(facility)
+
+    try:
+        db.cfgdb.mod_entry(str(SYSLOG_TABLE_CDB), str(server_ip_address), data)
+        restart_rsyslog_config()
+        log.log_notice(
+            "Updated syslog selector: server={}, facility={}, severity={}".format(
+                server_ip_address,
+                data.get(SYSLOG_FACILITY, "unchanged"),
+                data.get(SYSLOG_SEVERITY, "unchanged"),
+            )
+        )
+    except Exception as e:
+        log.log_error("Failed to update syslog selector: {}".format(str(e)))
+        ctx.fail(str(e))
+
+
+@selector.command("del")
+@click.argument(
+    "server_ip_address",
+    nargs=1,
+    required=True,
+    callback=ip_addr_validator
+)
+@clicommon.pass_db
+def selector_del(db, server_ip_address):
+    """ Remove facility/severity selector from a syslog server """
+    ctx = click.get_current_context()
+    server_validator(ctx, db.cfgdb, server_ip_address)
+
+    entry = db.cfgdb.get_entry(str(SYSLOG_TABLE_CDB), str(server_ip_address))
+    if not entry.get(SYSLOG_FACILITY) and not entry.get(SYSLOG_SEVERITY):
+        raise click.ClickException(
+            "No facility/severity selector configured for syslog server {}".format(
+                server_ip_address)
+        )
+
+    try:
+        updated = dict(entry)
+        updated.pop(SYSLOG_FACILITY, None)
+        updated.pop(SYSLOG_SEVERITY, None)
+        db.cfgdb.set_entry(str(SYSLOG_TABLE_CDB), str(server_ip_address), updated)
+        restart_rsyslog_config()
+        log.log_notice("Removed syslog selector: server={}".format(server_ip_address))
+    except Exception as e:
+        log.log_error("Failed to remove syslog selector: {}".format(str(e)))
         ctx.fail(str(e))
 
 
