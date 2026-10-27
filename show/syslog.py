@@ -21,6 +21,8 @@ SYSLOG_TLS_PERMITTED_PEERS = "tls_permitted_peers"
 SYSLOG_TRANSPORT_SECURITY = "transport_security"
 SYSLOG_TLS_APPLIED = "applied_transport_security"
 SYSLOG_TLS_FAILURE_REASON = "failure_reason"
+SYSLOG_SEVERITY = syslog_common.SYSLOG_FIELD_SEVERITY
+SYSLOG_FACILITY = syslog_common.SYSLOG_FIELD_FACILITY
 
 #
 # Syslog helpers ------------------------------------------------------------------------------------------------------
@@ -35,6 +37,13 @@ def is_tls_server(entry):
     proto = str(entry.get(SYSLOG_PROTOCOL, "")).lower()
     transport_security = str(entry.get(SYSLOG_TRANSPORT_SECURITY, "")).lower()
     return proto == "tls" or transport_security in ("true", "tls", "enabled", "1")
+
+
+def syslog_field_display(entry, field):
+    value = entry.get(field)
+    if value is None or value == "" or str(value).lower() == "none":
+        return "N/A"
+    return value
 
 
 def get_tls_apply_state(db, server):
@@ -76,6 +85,8 @@ def syslog(db, ctx):
         "PROTOCOL",
         "TLS PROFILE ID",
         "PERMITTED PEERS",
+        "FACILITY",
+        "SEVERITY",
         "TLS APPLIED",
         "FAILURE REASON",
     ]
@@ -95,6 +106,8 @@ def syslog(db, ctx):
             entry.get(SYSLOG_PROTOCOL, "udp"),
             entry.get(SYSLOG_TLS_PROFILE_ID, "N/A"),
             entry.get(SYSLOG_TLS_PERMITTED_PEERS, "N/A"),
+            syslog_field_display(entry, SYSLOG_FACILITY),
+            syslog_field_display(entry, SYSLOG_SEVERITY),
             tls_applied,
             failure_reason,
         ]
