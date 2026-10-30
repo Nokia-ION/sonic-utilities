@@ -7279,6 +7279,209 @@ def ipv6(ctx):
     """Enable or Disable IPv6 processing on interface"""
     pass
 
+
+def get_ipv6_ra_config_table(interface_name):
+    """Return CONFIG_DB table name for IPv6 RA fields on an L3 interface."""
+    if '.' in interface_name and (interface_name.startswith("Ethernet") or interface_name.startswith("PortChannel")):
+        return "VLAN_SUB_INTERFACE"
+    if interface_name.startswith("Ethernet"):
+        return "INTERFACE"
+    if interface_name.startswith("PortChannel"):
+        return "PORTCHANNEL_INTERFACE"
+    if interface_name.startswith("Vlan"):
+        return "VLAN_INTERFACE"
+    return None
+
+
+def set_ipv6_ra_field(ctx, interface_name, field, value):
+    db = ctx.obj['config_db']
+
+    if clicommon.get_interface_naming_mode() == "alias":
+        interface_name = interface_alias_to_name(db, interface_name)
+        if interface_name is None:
+            ctx.fail("'interface_name' is None!")
+
+    interface_type = get_ipv6_ra_config_table(interface_name)
+    if interface_type is None:
+        ctx.fail("'interface_name' is not valid. Valid names [Ethernet/PortChannel/Vlan/Ethernet.x/PortChannel.x]")
+
+    if interface_type in ("INTERFACE", "PORTCHANNEL_INTERFACE"):
+        if interface_name_is_valid(db, interface_name) is False:
+            ctx.fail("Interface name %s is invalid. Please enter a valid interface name!!" % (interface_name))
+    elif interface_type == "VLAN_INTERFACE":
+        if not clicommon.is_valid_vlan_interface(db, interface_name):
+            ctx.fail("Interface name %s is invalid. Please enter a valid interface name!!" % (interface_name))
+    elif interface_type == "VLAN_SUB_INTERFACE":
+        parent = interface_name.split('.', 1)[0]
+        if interface_name_is_valid(db, parent) is False:
+            ctx.fail("Parent interface %s is invalid. Please enter a valid interface name!!" % (parent))
+
+    try:
+        db.mod_entry(interface_type, interface_name, {field: value})
+    except ValueError as e:
+        ctx.fail("Invalid ConfigDB. Error: {}".format(e))
+
+
+@ipv6.group('ra')
+@click.pass_context
+def ipv6_ra(ctx):
+    """IPv6 router advertisement configuration"""
+    pass
+
+
+@ipv6_ra.command('interval')
+@click.pass_context
+@click.argument('interface_name', metavar='<interface_name>', required=True)
+@click.argument('interval', metavar='<seconds>', required=True, type=int)
+def ipv6_ra_interval(ctx, interface_name, interval):
+    """Set IPv6 RA interval in seconds"""
+    if interval < 0:
+        ctx.fail("interval must be a non-negative integer")
+    set_ipv6_ra_field(ctx, interface_name, "ipv6_ra_interval", str(interval))
+
+
+@ipv6_ra.command('lifetime')
+@click.pass_context
+@click.argument('interface_name', metavar='<interface_name>', required=True)
+@click.argument('lifetime', metavar='<seconds>', required=True, type=int)
+def ipv6_ra_lifetime(ctx, interface_name, lifetime):
+    """Set IPv6 RA router lifetime in seconds"""
+    if lifetime < 0:
+        ctx.fail("lifetime must be a non-negative integer")
+    set_ipv6_ra_field(ctx, interface_name, "ipv6_ra_lifetime", str(lifetime))
+
+
+@ipv6_ra.command('reachable-time')
+@click.pass_context
+@click.argument('interface_name', metavar='<interface_name>', required=True)
+@click.argument('milliseconds', metavar='<milliseconds>', required=True, type=int)
+def ipv6_ra_reachable_time(ctx, interface_name, milliseconds):
+    """Set IPv6 RA reachable time in milliseconds (0..3600000, 0 = unspecified)"""
+    if milliseconds < 0 or milliseconds > 3600000:
+        ctx.fail("reachable-time must be between 0 and 3600000 milliseconds")
+    set_ipv6_ra_field(ctx, interface_name, "ipv6_ra_reachable_time", str(milliseconds))
+
+
+@ipv6_ra.command('suppress')
+@click.pass_context
+@click.argument('interface_name', metavar='<interface_name>', required=True)
+@click.argument('suppress', metavar='<true|false>', required=True, type=click.Choice(['true', 'false']))
+def ipv6_ra_suppress(ctx, interface_name, suppress):
+    """Suppress or enable transmission of IPv6 router advertisements"""
+    set_ipv6_ra_field(ctx, interface_name, "ipv6_ra_suppress", suppress)
+
+
+@ipv6_ra.command('enable')
+@click.pass_context
+@click.argument('interface_name', metavar='<interface_name>', required=True)
+@click.argument('enable', metavar='<true|false>', required=True, type=click.Choice(['true', 'false']))
+def ipv6_ra_enable(ctx, interface_name, enable):
+    """Enable or disable transmission of IPv6 router advertisements"""
+    set_ipv6_ra_field(ctx, interface_name, "ipv6_ra_enable", enable)
+
+
+@ipv6_ra.command('managed')
+@click.pass_context
+@click.argument('interface_name', metavar='<interface_name>', required=True)
+@click.argument('managed', metavar='<true|false>', required=True, type=click.Choice(['true', 'false']))
+def ipv6_ra_managed(ctx, interface_name, managed):
+    """Set IPv6 RA managed address configuration flag"""
+    set_ipv6_ra_field(ctx, interface_name, "ipv6_ra_managed", managed)
+
+
+@ipv6_ra.command('other-config')
+@click.pass_context
+@click.argument('interface_name', metavar='<interface_name>', required=True)
+@click.argument('other_config', metavar='<true|false>', required=True, type=click.Choice(['true', 'false']))
+def ipv6_ra_other_config(ctx, interface_name, other_config):
+    """Set IPv6 RA other configuration flag"""
+    set_ipv6_ra_field(ctx, interface_name, "ipv6_ra_other_config", other_config)
+
+
+def set_ipv6_ra_prefix_field(ctx, interface_name, prefix, field, value):
+    db = ctx.obj['config_db']
+
+    if clicommon.get_interface_naming_mode() == "alias":
+        interface_name = interface_alias_to_name(db, interface_name)
+        if interface_name is None:
+            ctx.fail("'interface_name' is None!")
+
+    interface_type = get_ipv6_ra_config_table(interface_name)
+    if interface_type is None:
+        ctx.fail("'interface_name' is not valid. Valid names [Ethernet/PortChannel/Vlan/Ethernet.x/PortChannel.x]")
+
+    if ':' not in prefix:
+        ctx.fail("prefix must be an IPv6 prefix")
+
+    key = interface_name + "|" + prefix
+    try:
+        db.mod_entry(interface_type, key, {field: value})
+    except ValueError as e:
+        ctx.fail("Invalid ConfigDB. Error: {}".format(e))
+
+
+@ipv6_ra.group('prefix')
+@click.pass_context
+def ipv6_ra_prefix(ctx):
+    """IPv6 RA prefix configuration"""
+    pass
+
+
+@ipv6_ra_prefix.command('valid-lifetime')
+@click.pass_context
+@click.argument('interface_name', metavar='<interface_name>', required=True)
+@click.argument('prefix', metavar='<ipv6-prefix>', required=True)
+@click.argument('lifetime', metavar='<seconds>', required=True, type=int)
+def ipv6_ra_prefix_valid_lifetime(ctx, interface_name, prefix, lifetime):
+    """Set IPv6 RA prefix valid lifetime in seconds"""
+    if lifetime < 0:
+        ctx.fail("lifetime must be a non-negative integer")
+    set_ipv6_ra_prefix_field(ctx, interface_name, prefix, "ipv6_ra_prefix_valid_lifetime", str(lifetime))
+
+
+@ipv6_ra_prefix.command('disable-advertisement')
+@click.pass_context
+@click.argument('interface_name', metavar='<interface_name>', required=True)
+@click.argument('prefix', metavar='<ipv6-prefix>', required=True)
+@click.argument('disable', metavar='<true|false>', required=True, type=click.Choice(['true', 'false']))
+def ipv6_ra_prefix_disable_advertisement(ctx, interface_name, prefix, disable):
+    """Disable advertising an IPv6 RA prefix (Vlan routed-vlan / radvd only)"""
+    if not interface_name.startswith("Vlan"):
+        ctx.fail("disable-advertisement is supported on Vlan interfaces only")
+    set_ipv6_ra_prefix_field(ctx, interface_name, prefix, "ipv6_ra_prefix_disable_advertisement", disable)
+
+
+@ipv6_ra_prefix.command('preferred-lifetime')
+@click.pass_context
+@click.argument('interface_name', metavar='<interface_name>', required=True)
+@click.argument('prefix', metavar='<ipv6-prefix>', required=True)
+@click.argument('lifetime', metavar='<seconds>', required=True, type=int)
+def ipv6_ra_prefix_preferred_lifetime(ctx, interface_name, prefix, lifetime):
+    """Set IPv6 RA prefix preferred lifetime in seconds"""
+    if lifetime < 0:
+        ctx.fail("lifetime must be a non-negative integer")
+    set_ipv6_ra_prefix_field(ctx, interface_name, prefix, "ipv6_ra_prefix_preferred_lifetime", str(lifetime))
+
+
+@ipv6_ra_prefix.command('disable-autoconfig')
+@click.pass_context
+@click.argument('interface_name', metavar='<interface_name>', required=True)
+@click.argument('prefix', metavar='<ipv6-prefix>', required=True)
+@click.argument('disable', metavar='<true|false>', required=True, type=click.Choice(['true', 'false']))
+def ipv6_ra_prefix_disable_autoconfig(ctx, interface_name, prefix, disable):
+    """Disable SLAAC for an IPv6 RA prefix"""
+    set_ipv6_ra_prefix_field(ctx, interface_name, prefix, "ipv6_ra_prefix_disable_autoconfig", disable)
+
+
+@ipv6_ra_prefix.command('enable-onlink')
+@click.pass_context
+@click.argument('interface_name', metavar='<interface_name>', required=True)
+@click.argument('prefix', metavar='<ipv6-prefix>', required=True)
+@click.argument('enable', metavar='<true|false>', required=True, type=click.Choice(['true', 'false']))
+def ipv6_ra_prefix_enable_onlink(ctx, interface_name, prefix, enable):
+    """Set IPv6 RA prefix on-link flag"""
+    set_ipv6_ra_prefix_field(ctx, interface_name, prefix, "ipv6_ra_prefix_enable_onlink", enable)
+
 @ipv6.group('enable')
 def enable():
     """Enable IPv6 processing on interface"""
