@@ -87,18 +87,12 @@ def syslog(db, ctx):
         "PERMITTED PEERS",
         "FACILITY",
         "SEVERITY",
-        "TLS APPLIED",
-        "FAILURE REASON",
     ]
     body = []
 
     table = db.cfgdb.get_table(SYSLOG_TABLE)
     for key in natsorted(table):
         entry = table[key]
-        if is_tls_server(entry):
-            tls_applied, failure_reason = get_tls_apply_state(db, key)
-        else:
-            tls_applied, failure_reason = "N/A", "N/A"
         row = [key] + [
             entry.get(SYSLOG_SOURCE, "N/A"),
             entry.get(SYSLOG_PORT, "N/A"),
@@ -108,10 +102,33 @@ def syslog(db, ctx):
             entry.get(SYSLOG_TLS_PERMITTED_PEERS, "N/A"),
             syslog_field_display(entry, SYSLOG_FACILITY),
             syslog_field_display(entry, SYSLOG_SEVERITY),
-            tls_applied,
-            failure_reason,
         ]
         body.append(row)
+
+    click.echo(format(header, body))
+
+
+@syslog.command(
+    name='tls-state'
+)
+@clicommon.pass_db
+def tls_state(db):
+    """ Show TLS transport security apply state for syslog servers """
+
+    header = [
+        "SERVER IP",
+        "TLS APPLIED",
+        "FAILURE REASON",
+    ]
+    body = []
+
+    table = db.cfgdb.get_table(SYSLOG_TABLE)
+    for key in natsorted(table):
+        entry = table[key]
+        if not is_tls_server(entry):
+            continue
+        tls_applied, failure_reason = get_tls_apply_state(db, key)
+        body.append([key, tls_applied, failure_reason])
 
     click.echo(format(header, body))
 
